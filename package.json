@@ -1,0 +1,30 @@
+{
+  "name": "nng-node",
+  "version": "1.0.0",
+  "description": "Node.js bindings for nanomsg-NG (NNG) v1.11 using Node-API",
+  "main": "lib/index.js",
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "build": "node-gyp rebuild",
+    "clean": "node-gyp clean",
+    "test": "node test/test.js"
+  },
+  "keywords": [
+    "nng",
+    "nanomsg",
+    "messaging",
+    "ipc",
+    "tcp",
+    "sockets"
+  ],
+  "author": "",
+  "license": "MIT",
+  "gypfile": true,
+  "dependencies": {
+    "node-gyp": "^10.0.1"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
