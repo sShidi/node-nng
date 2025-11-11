@@ -20,10 +20,10 @@
   "author": "",
   "license": "MIT",
   "gypfile": true,
-  "dependencies": {
+  "dependencies": {},
+  "devDependencies": {
     "node-gyp": "^10.0.1"
   },
-  "devDependencies": {},
   "engines": {
     "node": ">=16.0.0"
   }

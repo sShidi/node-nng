@@ -17,10 +17,11 @@ Node.js bindings for [nanomsg-NG (NNG)](https://github.com/nanomsg/nng) v1.11 us
 ### Prerequisites
 
 1. Node.js >= 16.0.0
-2. Build tools:
-   - **Linux**: `build-essential`, `cmake`
-   - **macOS**: Xcode Command Line Tools
-   - **Windows**: Visual Studio Build Tools
+2. CMake >= 3.13
+3. Build tools:
+    - **Linux**: `build-essential`, `cmake`, `git`
+    - **macOS**: Xcode Command Line Tools, `cmake` (via Homebrew: `brew install cmake`)
+    - **Windows**: Visual Studio Build Tools, CMake
 
 ### Steps
 
@@ -32,10 +33,20 @@ git clone --depth 1 --branch v1.11.0 https://github.com/nanomsg/nng.git
 cd ..
 ```
 
-2. Install and build:
+2. Install dependencies:
 ```bash
-npm install
+npm install --save-dev node-gyp
 ```
+
+3. Build NNG and the bindings:
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+**Note**: The build process will:
+- First build NNG using CMake
+- Then compile the Node.js bindings linking against NNG
 
 ## Usage
 
@@ -48,23 +59,23 @@ async function main() {
     // Create sockets
     const rep = nng.rep();
     const req = nng.req();
-    
+
     // Setup connection
     rep.listen('tcp://127.0.0.1:5555');
     req.dial('tcp://127.0.0.1:5555');
-    
+
     // Responder
     (async () => {
         const msg = await rep.recv();
         console.log('Received:', msg.toString());
         await rep.send('World');
     })();
-    
+
     // Requester
     await req.send('Hello');
     const reply = await req.recv();
     console.log('Reply:', reply.toString());
-    
+
     // Cleanup
     rep.close();
     req.close();
@@ -226,10 +237,10 @@ npm rebuild
 The bindings use Node-API (N-API) for maximum compatibility across Node.js versions. The project structure:
 
 - `src/` - Native C code using Node-API
-  - `nng_bindings.c` - Main module and core functions
-  - `socket.c` - Socket-related functions
-  - `dialer.c` - Dialer functions
-  - `listener.c` - Listener functions
+    - `nng_bindings.c` - Main module and core functions
+    - `socket.c` - Socket-related functions
+    - `dialer.c` - Dialer functions
+    - `listener.c` - Listener functions
 - `lib/` - JavaScript wrapper API
 - `deps/nng/` - NNG library source (v1.11)
 
