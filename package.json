@@ -3,13 +3,7 @@
   "version": "1.0.0",
   "description": "Node.js bindings for nanomsg-NG (NNG) v1.11 using Node-API",
   "main": "lib/index.js",
-  "scripts": {
-    "install": "bash build.sh",
-    "build": "bash build.sh",
-    "build:gyp": "node-gyp rebuild",
-    "clean": "node-gyp clean && rm -rf build deps/nng/build",
-    "test": "node test/test.js"
-  },
+
   "keywords": [
     "nng",
     "nanomsg",

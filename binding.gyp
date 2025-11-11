@@ -18,7 +18,7 @@
       "conditions": [
         ["OS=='linux'", {
           "libraries": [
-            "<(module_root_dir)/build/Release/libnng.a",
+            "<(module_root_dir)/deps/nng/build/libnng.a",
             "-lpthread"
           ],
           "ldflags": ["-fPIC"],
