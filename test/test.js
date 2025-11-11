@@ -100,16 +100,20 @@ async function testPubSubBasic() {
 
         sub.setOpt('sub:subscribe', '');
 
-        await delay(200);
+        await delay(500);
 
+        sub.setOpt('recv-timeout', 5000);
+
+        const message = 'Hello subscribers!';
+        const sentMessage = '\0' + message;
         const receivePromise = sub.recv();
-        await pub.send('Hello subscribers!');
+        await pub.send(sentMessage);
 
         const msg = await receivePromise;
-        if (msg.toString() !== 'Hello subscribers!') {
+        if (msg.toString() !== sentMessage) {
             throw new Error('Message mismatch');
         }
-        console.log('SUB received:', msg.toString());
+        console.log('SUB received:', msg.toString().slice(1));
 
         console.log('✓ PUB/SUB basic test passed');
     } catch (err) {
@@ -121,7 +125,7 @@ async function testPubSubBasic() {
     }
 }
 
-// Test 4: PUB/SUB pattern - Topic subscription
+// Test 4: PUB/SUB pattern - Specific Topics
 async function testPubSubTopics() {
     console.log('\n=== Testing PUB/SUB Pattern - Specific Topics ===');
 
@@ -132,46 +136,51 @@ async function testPubSubTopics() {
         pub.listen('tcp://127.0.0.1:5561');
         sub.dial('tcp://127.0.0.1:5561');
 
-        sub.setOpt('sub:subscribe', 'topic1:');
+        const topic = 'topic1:';
+        sub.setOpt('sub:subscribe', topic);
 
-        await delay(200);
+        await delay(500);
 
         // Should not receive (wrong topic)
-        await pub.send('topic2: Ignored message');
+        const ignoredMessage = 'Ignored message';
+        await pub.send('topic2:' + '\0' + ignoredMessage);
+
+        sub.setOpt('recv-timeout', 1000);
         try {
-            await Promise.race([
-                sub.recv(),
-                delay(500).then(() => { throw new Error('Timeout expected'); })
-            ]);
+            await sub.recv();
             throw new Error('Received unexpected message');
         } catch (err) {
-            if (err.message !== 'Timeout expected') {
+            if (!err.message.includes('Timed out')) {
                 throw err;
             }
             console.log('✓ Ignored wrong topic');
         }
 
         // Should receive (correct topic)
+        const message = 'Important message';
+        const sentMessage = topic + '\0' + message;
+
+        sub.setOpt('recv-timeout', 5000);
         const receivePromise = sub.recv();
-        await pub.send('topic1: Important message');
+        await pub.send(sentMessage);
 
         const msg = await receivePromise;
-        if (msg.toString() !== 'topic1: Important message') {
+        if (msg.toString() !== sentMessage) {
             throw new Error('Message mismatch');
         }
-        console.log('SUB received:', msg.toString());
+        console.log('SUB received:', msg.toString().replace(topic + '\0', topic + ' '));
 
         // Unsubscribe and test
-        sub.setOpt('sub:unsubscribe', 'topic1:');
-        await pub.send('topic1: After unsubscribe');
+        sub.setOpt('sub:unsubscribe', topic);
+        const unsubscribeMessage = 'After unsubscribe';
+        await pub.send(topic + '\0' + unsubscribeMessage);
+
+        sub.setOpt('recv-timeout', 1000);
         try {
-            await Promise.race([
-                sub.recv(),
-                delay(500).then(() => { throw new Error('Timeout expected'); })
-            ]);
+            await sub.recv();
             throw new Error('Received unexpected message after unsubscribe');
         } catch (err) {
-            if (err.message !== 'Timeout expected') {
+            if (!err.message.includes('Timed out')) {
                 throw err;
             }
             console.log('✓ Ignored after unsubscribe');
@@ -236,7 +245,7 @@ async function testPushPullMultiple() {
 
         const received = new Set();
         const recvLoop = async (pull, id) => {
-            for (let i = 0; i < 2; i++) {  // Expect 2 messages total, distributed
+            for (let i = 0; i < 2; i++) {
                 const msg = await pull.recv();
                 console.log(`Pull${id} received:`, msg.toString());
                 received.add(msg.toString());
@@ -251,7 +260,7 @@ async function testPushPullMultiple() {
         await push.send('Task 3');
         await push.send('Task 4');
 
-        await delay(500); // Wait for distribution
+        await delay(500);
 
         if (received.size !== 4) {
             throw new Error('Not all tasks received');
@@ -321,7 +330,10 @@ async function testBus() {
         bus2.dial('tcp://127.0.0.1:5563');
         bus3.dial('tcp://127.0.0.1:5563');
 
-        await delay(200);
+        await delay(500);
+
+        bus2.setOpt('recv-timeout', 5000);
+        bus3.setOpt('recv-timeout', 5000);
 
         // bus1 sends, bus2 and bus3 should receive (but not self)
         let recvCount = 0;
@@ -382,7 +394,7 @@ async function testBinaryData() {
     }
 }
 
-// Test 10: Socket options (fixed with correct option names and types)
+// Test 10: Socket options
 async function testSocketOptions() {
     console.log('\n=== Testing Socket Options ===');
 
@@ -390,7 +402,7 @@ async function testSocketOptions() {
     const sub = nng.sub();
 
     try {
-        // Test integer option: ttl-max (common to most sockets)
+        // Test integer option: ttl-max
         const ttlOpt = 'ttl-max';
         req.setOpt(ttlOpt, 4);
         const ttl = req.getOpt(ttlOpt);
@@ -408,7 +420,7 @@ async function testSocketOptions() {
         }
         console.log('✓ Set/get socket-name (string)');
 
-        // Test ms option: recv-timeout (set only, no get_ms in bindings)
+        // Test ms option: recv-timeout
         const timeoutOpt = 'recv-timeout';
         req.setOpt(timeoutOpt, 500);
         console.log('✓ Set recv-timeout (ms) - no get support');
@@ -427,7 +439,7 @@ async function testSocketOptions() {
     }
 }
 
-// Test 11: Dialer and Listener explicit
+// Test 11: Explicit Dialer and Listener
 async function testDialerListener() {
     console.log('\n=== Testing Explicit Dialer and Listener ===');
 
