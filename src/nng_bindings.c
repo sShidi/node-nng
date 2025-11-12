@@ -10,6 +10,7 @@
 #include <nng/protocol/reqrep0/req.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 // Forward declarations from other modules
 napi_value init_socket_functions(napi_env env, napi_value exports);
@@ -26,6 +27,226 @@ static napi_value create_error(napi_env env, int rv) {
     napi_create_string_utf8(env, msg, NAPI_AUTO_LENGTH, &msg_value);
     napi_create_error(env, NULL, msg_value, &error);
     return error;
+}
+
+// New: Struct for receive context
+typedef struct {
+    nng_socket sock;
+    nng_aio *aio;
+    napi_threadsafe_function tsfn;
+    bool receiving;
+    napi_env env;
+} RecvContext;
+
+// New: Struct for threadsafe call data
+typedef struct {
+    void *data;
+    size_t size;
+    int error;
+} CallData;
+
+// New: AIO completion callback
+static void recv_callback(void *arg) {
+    RecvContext *ctx = (RecvContext *)arg;
+    int rv = nng_aio_result(ctx->aio);
+
+    CallData *calldata = (CallData *)malloc(sizeof(CallData));
+    calldata->data = NULL;
+    calldata->size = 0;
+    calldata->error = rv;
+
+    if (rv == 0) {
+        nng_msg *msg = nng_aio_get_msg(ctx->aio);
+        if (msg) {
+            void *body = nng_msg_body(msg);
+            size_t len = nng_msg_len(msg);
+            calldata->data = malloc(len);
+            if (calldata->data) {
+                memcpy(calldata->data, body, len);
+                calldata->size = len;
+            }
+            nng_msg_free(msg);
+        }
+    }
+
+    napi_call_threadsafe_function(ctx->tsfn, calldata, napi_tsfn_blocking);
+
+    // Restart if still receiving and not closed
+    if (ctx->receiving && rv != NNG_ECLOSED) {
+        nng_recv_aio(ctx->sock, ctx->aio);
+    }
+}
+
+// New: Threadsafe function to call JS callback
+static void call_js(napi_env env, napi_value js_cb, void *context, void *data) {
+    CallData *calldata = (CallData *)data;
+    napi_value global, nullv, undef;
+    napi_get_global(env, &global);
+    napi_get_null(env, &nullv);
+    napi_get_undefined(env, &undef);
+
+    napi_value args[2];
+    args[0] = nullv;  // err
+    args[1] = nullv;  // data
+
+    if (calldata->error == 0 && calldata->data) {
+        napi_create_buffer_copy(env, calldata->size, calldata->data, NULL, &args[1]);
+    } else {
+        args[0] = create_error(env, calldata->error);
+        args[1] = nullv;
+    }
+
+    napi_call_function(env, global, js_cb, 2, args, &undef);
+
+    if (calldata->data) free(calldata->data);
+    free(calldata);
+}
+
+// New: Start asynchronous receiving with callback
+static napi_value socket_start_recv(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+    if (argc < 2) {
+        napi_throw_error(env, NULL, "Expected socket ID and callback function");
+        return NULL;
+    }
+
+    uint32_t id;
+    napi_get_value_uint32(env, args[0], &id);
+
+    napi_value cb = args[1];
+    napi_valuetype type;
+    napi_typeof(env, cb, &type);
+    if (type != napi_function) {
+        napi_throw_type_error(env, NULL, "Second argument must be a function");
+        return NULL;
+    }
+
+    nng_socket sock = { .id = id };
+    RecvContext *ctx = NULL;
+    int rv = nng_socket_get_ptr(sock, "node_recv_ctx", (void **)&ctx);
+
+    if (rv != 0) {
+        // Create new context
+        ctx = (RecvContext *)malloc(sizeof(RecvContext));
+        if (!ctx) {
+            napi_throw_error(env, NULL, "Memory allocation failed");
+            return NULL;
+        }
+        ctx->sock = sock;
+        ctx->env = env;
+        ctx->receiving = false;
+        ctx->tsfn = NULL;
+        rv = nng_aio_alloc(&ctx->aio, recv_callback, ctx);
+        if (rv != 0) {
+            free(ctx);
+            return create_error(env, rv);
+        }
+        rv = nng_socket_set_ptr(sock, "node_recv_ctx", ctx);
+        if (rv != 0) {
+            nng_aio_free(ctx->aio);
+            free(ctx);
+            return create_error(env, rv);
+        }
+    }
+
+    // Release old tsfn if exists
+    if (ctx->tsfn) {
+        napi_release_threadsafe_function(ctx->tsfn, napi_tsfn_release);
+        ctx->tsfn = NULL;
+    }
+
+    // Create new threadsafe function
+    napi_value name;
+    napi_create_string_utf8(env, "nng_recv_cb", NAPI_AUTO_LENGTH, &name);
+    napi_status status = napi_create_threadsafe_function(
+        env, cb, NULL, name, 0, 1, NULL, NULL, NULL, call_js, &ctx->tsfn
+    );
+    if (status != napi_ok) {
+        napi_throw_error(env, NULL, "Failed to create threadsafe function");
+        return NULL;
+    }
+
+    // Start receiving if not already
+    if (!ctx->receiving) {
+        ctx->receiving = true;
+        nng_recv_aio(ctx->sock, ctx->aio);
+    }
+
+    napi_value result;
+    napi_get_undefined(env, &result);
+    return result;
+}
+
+// New: Stop asynchronous receiving
+static napi_value socket_stop_recv(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+    if (argc < 1) {
+        napi_throw_error(env, NULL, "Expected socket ID");
+        return NULL;
+    }
+
+    uint32_t id;
+    napi_get_value_uint32(env, args[0], &id);
+
+    nng_socket sock = { .id = id };
+    void *ptr;
+    if (nng_socket_get_ptr(sock, "node_recv_ctx", &ptr) == 0) {
+        RecvContext *ctx = (RecvContext *)ptr;
+        ctx->receiving = false;
+        nng_aio_cancel(ctx->aio);
+    }
+
+    napi_value result;
+    napi_get_undefined(env, &result);
+    return result;
+}
+
+// Updated: nng_socket_close with cleanup
+static napi_value socket_close(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+    if (argc < 1) {
+        napi_throw_error(env, NULL, "Expected socket ID");
+        return NULL;
+    }
+
+    uint32_t id;
+    napi_get_value_uint32(env, args[0], &id);
+
+    nng_socket sock = { .id = id };
+
+    // New: Cleanup receive context if exists
+    void *ptr;
+    if (nng_socket_get_ptr(sock, "node_recv_ctx", &ptr) == 0) {
+        RecvContext *ctx = (RecvContext *)ptr;
+        ctx->receiving = false;
+        nng_aio_cancel(ctx->aio);
+        nng_aio_wait(ctx->aio);  // Wait for any pending callback
+        if (ctx->tsfn) {
+            napi_release_threadsafe_function(ctx->tsfn, napi_tsfn_release);
+        }
+        nng_aio_free(ctx->aio);
+        free(ctx);
+    }
+
+    int rv = nng_close(sock);
+
+    if (rv != 0) {
+        napi_throw_error(env, NULL, nng_strerror(rv));
+        return NULL;
+    }
+
+    napi_value result;
+    napi_get_undefined(env, &result);
+    return result;
 }
 
 // nng_socket_open
@@ -66,33 +287,6 @@ static napi_value socket_open(napi_env env, napi_callback_info info) {
     
     napi_value result;
     napi_create_uint32(env, sock.id, &result);
-    return result;
-}
-
-// nng_socket_close
-static napi_value socket_close(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
-    
-    if (argc < 1) {
-        napi_throw_error(env, NULL, "Expected socket ID");
-        return NULL;
-    }
-    
-    uint32_t id;
-    napi_get_value_uint32(env, args[0], &id);
-    
-    nng_socket sock = { .id = id };
-    int rv = nng_close(sock);
-    
-    if (rv != 0) {
-        napi_throw_error(env, NULL, nng_strerror(rv));
-        return NULL;
-    }
-    
-    napi_value result;
-    napi_get_undefined(env, &result);
     return result;
 }
 
@@ -381,7 +575,14 @@ static napi_value Init(napi_env env, napi_value exports) {
     
     napi_create_function(env, NULL, 0, socket_setopt_string, NULL, &fn);
     napi_set_named_property(env, exports, "socketSetoptString", fn);
-    
+
+    // New: Add start/stop recv
+    napi_create_function(env, NULL, 0, socket_start_recv, NULL, &fn);
+    napi_set_named_property(env, exports, "socketStartRecv", fn);
+
+    napi_create_function(env, NULL, 0, socket_stop_recv, NULL, &fn);
+    napi_set_named_property(env, exports, "socketStopRecv", fn);
+
     // Initialize other modules
     init_socket_functions(env, exports);
     init_dialer_functions(env, exports);
