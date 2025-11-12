@@ -1,5 +1,5 @@
 {
-  "name": "nng-node",
+  "name": "Mu",
   "version": "1.0.0",
   "description": "Node.js bindings for nanomsg-NG (NNG) v1.11 using Node-API",
   "main": "lib/index.js",

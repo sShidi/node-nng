@@ -1,4 +1,4 @@
-# nng-node
+# μ Mu
 
 Node.js bindings for [nanomsg-NG (NNG)](https://github.com/nanomsg/nng) v1.11 using Node-API.
 
