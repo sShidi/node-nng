@@ -23,9 +23,7 @@ Node.js bindings for [nanomsg-NG (NNG)](https://github.com/nanomsg/nng) v1.11 us
     - **macOS**: Xcode Command Line Tools, `cmake` (via Homebrew: `brew install cmake`)
     - **Windows**: Visual Studio Build Tools, CMake
 
-### Steps
-
-1. Clone NNG v1.11 into `deps/nng`:
+4. Clone NNG v1.11 into `deps/nng`:
 ```bash
 mkdir -p deps
 cd deps
@@ -33,15 +31,17 @@ git clone --depth 1 --branch v1.11.0 https://github.com/nanomsg/nng.git
 cd ..
 ```
 
-2. Install dependencies:
+### Steps
+
+1. Install dependencies:
 ```bash
 npm install --save-dev node-gyp
 ```
 
-3. Build NNG and the bindings:
+2. Build NNG and the bindings:
 ```bash
 chmod +x BulildNNG.sh
-./BulildNNG.sh
+bash BulildNNG.sh
 ```
 
 **Note**: The build process will:
