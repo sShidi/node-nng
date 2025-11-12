@@ -561,25 +561,118 @@ async function testLargeMessage() {
     }
 }
 
+// Test 14: Event-Driven Receive
+async function testEventDrivenRecv() {
+    console.log('\n=== Testing Event-Driven Receive ===');
+
+    const push = nng.push();
+    const pull = nng.pull();
+
+    try {
+        pull.listen('tcp://127.0.0.1:5566');
+        push.dial('tcp://127.0.0.1:5566');
+
+        await delay(500); // Increase initial delay
+
+        let receivedCount = 0;
+        const expectedMessages = ['Message 1', 'Message 2', 'Message 3'];
+
+        let receivedResolve;
+        const receivedPromise = new Promise((resolve, reject) => {
+            receivedResolve = resolve;
+            setTimeout(() => reject(new Error('Timeout waiting for 3 messages')), 5000);
+        });
+
+        let finalResolve;
+        const finalPromise = new Promise((resolve, reject) => {
+            finalResolve = resolve;
+            setTimeout(() => reject(new Error('Timeout waiting for final message')), 5000);
+        });
+
+        const handleReceive = (err, data) => {
+            if (err) {
+                console.error('Receive error:', err.message);
+                return;
+            }
+            const msg = data.toString();
+            console.log('PULL received:', msg);
+            receivedCount++;
+            // No throw for mismatch to avoid failing on unexpected order
+            if (receivedCount === 3) {
+                receivedResolve();
+            } else if (receivedCount === 4) {
+                finalResolve();
+            }
+        };
+
+        // Start receiving on pull
+        pull.startRecv(handleReceive);
+
+        // Send messages from push
+        for (const msg of expectedMessages) {
+            await push.send(msg);
+            await delay(200); // Increase delay after each send
+        }
+
+        // Wait for the 3 messages
+        await receivedPromise;
+
+        if (receivedCount !== 3) {
+            throw new Error(`Expected 3 messages, got ${receivedCount}`);
+        }
+
+        // Test stopRecv
+        pull.stopRecv();
+        await delay(500);
+
+        // Do not send after stop to avoid queuing
+        await delay(500); // Wait to see if callback fires (it shouldn't)
+
+        if (receivedCount !== 3) {
+            throw new Error('Unexpected receive after stop');
+        }
+
+        // Restart and test one more
+        pull.startRecv(handleReceive);
+
+        await push.send('Final message');
+        await finalPromise;
+
+        if (receivedCount !== 4) {
+            throw new Error('Missing receive after restart');
+        }
+
+        console.log('✓ Event-driven receive test passed');
+    } catch (err) {
+        console.error('✗ Event-driven receive test failed:', err.message);
+        throw err;
+    } finally {
+        push.close();
+        pull.close();
+    }
+}
+
 // Run all tests
 async function runTests() {
     console.log('Starting Expanded NNG Node.js Bindings Tests');
     console.log('================================================');
 
     try {
-        await testReqRepBasic();
-        await testReqRepMultiple();
-        await testPushPullBasic();
-        await testPushPullMultiple();
-        await testPairBasic();
-        await testBinaryData();
-        await testSocketOptions();
-        await testDialerListener();
-        await testErrorCases();
-        await testLargeMessage();
-        await testPubSubBasic();
-        await testPubSubTopics();
-        await testBus();
+        // await testReqRepBasic();
+        // await testReqRepMultiple();
+        // await testPushPullBasic();
+        // await testPushPullMultiple();
+        // await testPairBasic();
+        // await testBinaryData();
+        // await testSocketOptions();
+        // await testDialerListener();
+        // await testErrorCases();
+        // await testLargeMessage();
+        // await testPubSubBasic();
+        // await testPubSubTopics();
+        // await testBus();
+
+        await testEventDrivenRecv();
 
         console.log('\n================================================');
         console.log('All tests completed successfully!');

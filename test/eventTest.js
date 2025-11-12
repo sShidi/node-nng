@@ -76,16 +76,21 @@ async function testEventBasedMultipleWorkers() {
 
     try {
         push.listen('tcp://127.0.0.1:5571');
-        pull1.dial('tcp://127.0.0.1:5571');
-        pull2.dial('tcp://127.0.0.1:5571');
 
-        await delay(100);
+        console.log('Connecting pull1...');
+        pull1.dial('tcp://127.0.0.1:5571');
+        await delay(200);
+
+        console.log('Connecting pull2...');
+        pull2.dial('tcp://127.0.0.1:5571');
+        await delay(200);
 
         const worker1Messages = [];
         const worker2Messages = [];
         let totalReceived = 0;
 
         // Worker 1 event handler
+        console.log('Setting up worker1 handler...');
         pull1.startRecv((err, data) => {
             if (err) {
                 console.error('Worker 1 error:', err.message);
@@ -94,10 +99,13 @@ async function testEventBasedMultipleWorkers() {
             const msg = data.toString();
             worker1Messages.push(msg);
             totalReceived++;
-            console.log('Worker 1 received:', msg);
+            console.log('Worker 1 received:', msg, `(total: ${totalReceived})`);
         });
 
+        await delay(100);
+
         // Worker 2 event handler
+        console.log('Setting up worker2 handler...');
         pull2.startRecv((err, data) => {
             if (err) {
                 console.error('Worker 2 error:', err.message);
@@ -106,18 +114,26 @@ async function testEventBasedMultipleWorkers() {
             const msg = data.toString();
             worker2Messages.push(msg);
             totalReceived++;
-            console.log('Worker 2 received:', msg);
+            console.log('Worker 2 received:', msg, `(total: ${totalReceived})`);
         });
+
+        await delay(100);
 
         // Send tasks
         const tasks = ['Task A', 'Task B', 'Task C', 'Task D', 'Task E', 'Task F'];
+        console.log('Sending tasks...');
         for (const task of tasks) {
             await push.send(task);
-            await delay(50);
+            console.log('Sent:', task);
+            await delay(100);
         }
 
         // Wait for all tasks to be distributed
-        await delay(500);
+        console.log('Waiting for tasks to be processed...');
+        await delay(1000);
+
+        console.log(`Total received: ${totalReceived}/${tasks.length}`);
+        console.log(`Worker 1: ${worker1Messages.length}, Worker 2: ${worker2Messages.length}`);
 
         if (totalReceived !== tasks.length) {
             throw new Error(`Expected ${tasks.length} tasks received, got ${totalReceived}`);
@@ -131,17 +147,39 @@ async function testEventBasedMultipleWorkers() {
             console.warn('⚠ Warning: Load distribution may be uneven');
         }
 
+        console.log('Stopping receivers...');
         pull1.stopRecv();
+        await delay(100);
         pull2.stopRecv();
+        await delay(100);
 
         console.log('✓ Event-based multiple workers test passed');
     } catch (err) {
         console.error('✗ Event-based multiple workers test failed:', err.message);
+        console.error(err.stack);
         throw err;
     } finally {
-        push.close();
-        pull1.close();
-        pull2.close();
+        console.log('Closing sockets...');
+        try {
+            push.close();
+            console.log('Push closed');
+        } catch (e) {
+            console.error('Error closing push:', e.message);
+        }
+
+        try {
+            pull1.close();
+            console.log('Pull1 closed');
+        } catch (e) {
+            console.error('Error closing pull1:', e.message);
+        }
+
+        try {
+            pull2.close();
+            console.log('Pull2 closed');
+        } catch (e) {
+            console.error('Error closing pull2:', e.message);
+        }
     }
 }
 

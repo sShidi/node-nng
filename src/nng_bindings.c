@@ -38,6 +38,9 @@ typedef struct {
     napi_threadsafe_function tsfn;
     bool receiving;
     bool active;
+    int in_callback;
+    pthread_mutex_t ctx_mutex;
+    pthread_cond_t ctx_cond;
 } RecvContext;
 
 // Struct for threadsafe call data
@@ -98,14 +101,26 @@ static void remove_context(uint32_t socket_id) {
 static void recv_callback(void *arg) {
     RecvContext *ctx = (RecvContext *)arg;
 
-    if (!ctx || !ctx->active) {
+    if (!ctx) {
         return;
     }
+
+    // Mark that we're in callback
+    pthread_mutex_lock(&ctx->ctx_mutex);
+    if (!ctx->active) {
+        pthread_mutex_unlock(&ctx->ctx_mutex);
+        return;
+    }
+    ctx->in_callback = true;
+    pthread_mutex_unlock(&ctx->ctx_mutex);
 
     int rv = nng_aio_result(ctx->aio);
 
     CallData *calldata = (CallData *)malloc(sizeof(CallData));
     if (!calldata) {
+        pthread_mutex_lock(&ctx->ctx_mutex);
+        ctx->in_callback = false;
+        pthread_mutex_unlock(&ctx->ctx_mutex);
         return;
     }
 
@@ -132,9 +147,14 @@ static void recv_callback(void *arg) {
         }
     }
 
+    // Get threadsafe function under lock
+    pthread_mutex_lock(&ctx->ctx_mutex);
+    napi_threadsafe_function tsfn = ctx->tsfn;
+    pthread_mutex_unlock(&ctx->ctx_mutex);
+
     // Call the JavaScript callback
-    if (ctx->tsfn) {
-        napi_status status = napi_call_threadsafe_function(ctx->tsfn, calldata, napi_tsfn_nonblocking);
+    if (tsfn) {
+        napi_status status = napi_call_threadsafe_function(tsfn, calldata, napi_tsfn_nonblocking);
 
         if (status != napi_ok) {
             if (calldata->data) free(calldata->data);
@@ -146,7 +166,13 @@ static void recv_callback(void *arg) {
     }
 
     // Continue receiving if still active
-    if (ctx->active && ctx->receiving && rv != NNG_ECLOSED && rv != NNG_ECANCELED) {
+    pthread_mutex_lock(&ctx->ctx_mutex);
+    bool should_continue = ctx->active && ctx->receiving &&
+                          rv != NNG_ECLOSED && rv != NNG_ECANCELED;
+    ctx->in_callback = false;
+    pthread_mutex_unlock(&ctx->ctx_mutex);
+
+    if (should_continue) {
         nng_recv_aio(ctx->sock, ctx->aio);
     }
 }
@@ -226,14 +252,30 @@ static napi_value socket_start_recv(napi_env env, napi_callback_info info) {
 
     if (ctx) {
         // Stop existing receiving
+        pthread_mutex_lock(&ctx->ctx_mutex);
         ctx->receiving = false;
+        pthread_mutex_unlock(&ctx->ctx_mutex);
+
         nng_aio_cancel(ctx->aio);
         nng_aio_wait(ctx->aio);
 
+        // Wait for callback to complete
+        pthread_mutex_lock(&ctx->ctx_mutex);
+        while (ctx->in_callback) {
+            pthread_mutex_unlock(&ctx->ctx_mutex);
+            nng_msleep(10);
+            pthread_mutex_lock(&ctx->ctx_mutex);
+        }
+        pthread_mutex_unlock(&ctx->ctx_mutex);
+
         // Release old threadsafe function
-        if (ctx->tsfn) {
-            napi_release_threadsafe_function(ctx->tsfn, napi_tsfn_abort);
-            ctx->tsfn = NULL;
+        pthread_mutex_lock(&ctx->ctx_mutex);
+        napi_threadsafe_function old_tsfn = ctx->tsfn;
+        ctx->tsfn = NULL;
+        pthread_mutex_unlock(&ctx->ctx_mutex);
+
+        if (old_tsfn) {
+            napi_release_threadsafe_function(old_tsfn, napi_tsfn_abort);
         }
     } else {
         // Create new context
@@ -248,9 +290,12 @@ static napi_value socket_start_recv(napi_env env, napi_callback_info info) {
         ctx->receiving = false;
         ctx->tsfn = NULL;
         ctx->active = true;
+        ctx->in_callback = false;
+        pthread_mutex_init(&ctx->ctx_mutex, NULL);
 
         int rv = nng_aio_alloc(&ctx->aio, recv_callback, ctx);
         if (rv != 0) {
+            pthread_mutex_destroy(&ctx->ctx_mutex);
             free(ctx);
             napi_throw_error(env, NULL, nng_strerror(rv));
             return NULL;
@@ -258,6 +303,7 @@ static napi_value socket_start_recv(napi_env env, napi_callback_info info) {
 
         if (store_context(ctx) < 0) {
             nng_aio_free(ctx->aio);
+            pthread_mutex_destroy(&ctx->ctx_mutex);
             free(ctx);
             napi_throw_error(env, NULL, "Too many active contexts");
             return NULL;
@@ -268,6 +314,7 @@ static napi_value socket_start_recv(napi_env env, napi_callback_info info) {
     napi_value resource_name;
     napi_create_string_utf8(env, "nng_recv_callback", NAPI_AUTO_LENGTH, &resource_name);
 
+    napi_threadsafe_function new_tsfn = NULL;
     napi_status status = napi_create_threadsafe_function(
         env,
         cb,
@@ -279,7 +326,7 @@ static napi_value socket_start_recv(napi_env env, napi_callback_info info) {
         tsfn_finalizer,
         NULL,
         call_js,
-        &ctx->tsfn
+        &new_tsfn
     );
 
     if (status != napi_ok) {
@@ -287,8 +334,12 @@ static napi_value socket_start_recv(napi_env env, napi_callback_info info) {
         return NULL;
     }
 
-    // Start receiving
+    // Set the new threadsafe function and start receiving
+    pthread_mutex_lock(&ctx->ctx_mutex);
+    ctx->tsfn = new_tsfn;
     ctx->receiving = true;
+    pthread_mutex_unlock(&ctx->ctx_mutex);
+
     nng_recv_aio(ctx->sock, ctx->aio);
 
     napi_value result;
@@ -313,7 +364,10 @@ static napi_value socket_stop_recv(napi_env env, napi_callback_info info) {
     RecvContext *ctx = find_context(id);
 
     if (ctx) {
+        pthread_mutex_lock(&ctx->ctx_mutex);
         ctx->receiving = false;
+        pthread_mutex_unlock(&ctx->ctx_mutex);
+
         nng_aio_cancel(ctx->aio);
     }
 
@@ -341,18 +395,32 @@ static napi_value socket_close(napi_env env, napi_callback_info info) {
     // Cleanup receive context if exists
     RecvContext *ctx = find_context(id);
     if (ctx) {
+        pthread_mutex_lock(&ctx->ctx_mutex);
         ctx->receiving = false;
         ctx->active = false;
+        pthread_mutex_unlock(&ctx->ctx_mutex);
+
         nng_aio_cancel(ctx->aio);
         nng_aio_wait(ctx->aio);
 
-        if (ctx->tsfn) {
-            napi_release_threadsafe_function(ctx->tsfn, napi_tsfn_abort);
-            ctx->tsfn = NULL;
+        // Wait for callback to complete
+        pthread_mutex_lock(&ctx->ctx_mutex);
+        while (ctx->in_callback) {
+            pthread_mutex_unlock(&ctx->ctx_mutex);
+            nng_msleep(10);
+            pthread_mutex_lock(&ctx->ctx_mutex);
+        }
+        napi_threadsafe_function tsfn = ctx->tsfn;
+        ctx->tsfn = NULL;
+        pthread_mutex_unlock(&ctx->ctx_mutex);
+
+        if (tsfn) {
+            napi_release_threadsafe_function(tsfn, napi_tsfn_abort);
         }
 
         nng_aio_free(ctx->aio);
         remove_context(id);
+        pthread_mutex_destroy(&ctx->ctx_mutex);
         free(ctx);
     }
 
