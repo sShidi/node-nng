@@ -658,19 +658,19 @@ async function runTests() {
     console.log('================================================');
 
     try {
-        // await testReqRepBasic();
-        // await testReqRepMultiple();
-        // await testPushPullBasic();
-        // await testPushPullMultiple();
-        // await testPairBasic();
-        // await testBinaryData();
-        // await testSocketOptions();
-        // await testDialerListener();
-        // await testErrorCases();
-        // await testLargeMessage();
-        // await testPubSubBasic();
-        // await testPubSubTopics();
-        // await testBus();
+        await testReqRepBasic();
+        await testReqRepMultiple();
+        await testPushPullBasic();
+        await testPushPullMultiple();
+        await testPairBasic();
+        await testBinaryData();
+        await testSocketOptions();
+        await testDialerListener();
+        await testErrorCases();
+        await testLargeMessage();
+        await testPubSubBasic();
+        await testPubSubTopics();
+        await testBus();
 
         await testEventDrivenRecv();
 
